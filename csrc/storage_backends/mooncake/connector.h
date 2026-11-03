@@ -43,7 +43,8 @@ class MooncakeConnector : public ConnectorBase<WorkerMooncakeConn> {
  public:
   MooncakeConnector(ConfigDict config, int num_workers,
                     L1RegistrationConfig l1_registration = {},
-                    WorkerPoolConfig worker_pool_config = {});
+                    WorkerPoolConfig worker_pool_config = {},
+                    bool require_exact_size = false);
   ~MooncakeConnector() override;
 
  protected:
@@ -74,6 +75,7 @@ class MooncakeConnector : public ConnectorBase<WorkerMooncakeConn> {
   void do_batch_delete(WorkerMooncakeConn& conn, const Request& req) override;
 
  private:
+  bool valid_read_size(int64_t bytes_read, size_t len) const;
   void ensure_registered(const void* buf, size_t len);
   void preregister_l1_memory(std::uintptr_t base, size_t size);
   void unregister_all_buffers() noexcept;
@@ -84,6 +86,7 @@ class MooncakeConnector : public ConnectorBase<WorkerMooncakeConn> {
   // The original config dict (kept for diagnostics).
   ConfigDict config_;
   L1RegistrationConfig l1_registration_;
+  const bool require_exact_size_;
   size_t preregistered_block_size_{0};
 };
 

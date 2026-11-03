@@ -22,6 +22,7 @@ from __future__ import annotations
 
 # Standard
 from typing import TYPE_CHECKING
+import copy
 import hashlib
 import threading
 
@@ -466,7 +467,12 @@ def _create_fault_inject_adapter(
     )
 
     assert isinstance(config, FaultInjectL2AdapterConfig)
-    inner = create_l2_adapter_from_registry(config.inner_config, l1_memory_desc)
+    inner_config = config.inner_config
+    if inner_config.serde_config != config.serde_config:
+        # StorageManager applies serde to the outer adapter.
+        inner_config = copy.copy(inner_config)
+        inner_config.serde_config = config.serde_config
+    inner = create_l2_adapter_from_registry(inner_config, l1_memory_desc)
     return FaultInjectL2Adapter(
         inner,
         rate=config.rate,

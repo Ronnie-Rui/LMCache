@@ -200,6 +200,9 @@ def _create_mooncake_store_l2_adapter(
         num_workers=config.num_workers,
         l1_registration=l1_registration,
         per_op_workers=config.per_op_workers,
+        # Raw KV buffers have an exact logical size. A serde buffer may
+        # instead be sized for the largest possible encoding.
+        require_exact_size=config.serde_config is None,
     )
     logger.info(
         "Created Mooncake Store L2 adapter "

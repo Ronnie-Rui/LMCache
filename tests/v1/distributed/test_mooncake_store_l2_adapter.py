@@ -34,6 +34,7 @@ from lmcache.v1.distributed.l2_adapters.factory import (
 from lmcache.v1.distributed.l2_adapters.mooncake_store_l2_adapter import (
     MooncakeStoreL2AdapterConfig,
 )
+from lmcache.v1.distributed.serde import SerdeConfig
 from lmcache.v1.memory_management import (
     MemoryFormat,
     MemoryObjMetadata,
@@ -383,8 +384,9 @@ class TestMooncakeStoreL1RegistrationFactory:
     Uses a fake native extension so these tests do not require Mooncake.
     """
 
+    @pytest.mark.parametrize("serde", [None, SerdeConfig(type="fp8")])
     def test_factory_passes_disabled_l1_registration_for_tcp(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, serde: SerdeConfig | None
     ):
         # First Party
         from lmcache.v1.distributed.l2_adapters import native_connector_l2_adapter
@@ -398,7 +400,9 @@ class TestMooncakeStoreL1RegistrationFactory:
                 num_workers: int,
                 l1_registration,
                 per_op_workers=None,
+                require_exact_size=False,
             ):
+                captured["require_exact_size"] = require_exact_size
                 captured["config"] = config
                 captured["num_workers"] = num_workers
                 captured["l1_registration"] = l1_registration
@@ -420,6 +424,7 @@ class TestMooncakeStoreL1RegistrationFactory:
                 "protocol": "tcp",
             }
         )
+        config.serde_config = serde
         l1_desc = L1MemoryDesc(ptr=123456, size=65536, align_bytes=4096)
 
         adapter = mooncake_store_module._create_mooncake_store_l2_adapter(
@@ -429,6 +434,7 @@ class TestMooncakeStoreL1RegistrationFactory:
         wrapped_adapter: Any = adapter
 
         assert wrapped_adapter[0] == "wrapped"
+        assert captured["require_exact_size"] is (serde is None)
         assert captured["config"] == config.setup_config
         assert captured["num_workers"] == 3
         registration = captured["l1_registration"]
@@ -451,6 +457,7 @@ class TestMooncakeStoreL1RegistrationFactory:
                 num_workers: int,
                 l1_registration,
                 per_op_workers=None,
+                require_exact_size=False,
             ):
                 captured["config"] = config
                 captured["num_workers"] = num_workers
@@ -502,6 +509,7 @@ class TestMooncakeStoreL1RegistrationFactory:
                 num_workers: int,
                 l1_registration,
                 per_op_workers=None,
+                require_exact_size=False,
             ):
                 captured["config"] = config
                 captured["num_workers"] = num_workers
@@ -755,6 +763,23 @@ class TestMooncakeStoreIntegration:
             )
 
         self.adapter.submit_unlock(keys)
+
+    def test_batch_load_rejects_short_object(self) -> None:
+        keys = [create_object_key(i, "short_object") for i in range(2)]
+        stored = [create_memory_obj(size=2), create_memory_obj(size=1)]
+        destinations = [create_memory_obj(size=2, fill_value=0.0) for _ in keys]
+
+        for key, obj in zip(keys, stored, strict=True):
+            store_tid = self.adapter.submit_store_task([key], [obj])
+            assert wait_for_event_fd(self.adapter.get_store_event_fd())
+            assert self.adapter.pop_completed_store_tasks()[store_tid].is_successful()
+
+        load_tid = self.adapter.submit_load_task(keys, destinations)
+        assert wait_for_event_fd(self.adapter.get_load_event_fd())
+        loaded = self.adapter.query_load_result(load_tid)
+        assert loaded is not None
+        assert [loaded.test(i) for i in range(2)] == [True, False]
+        assert torch.equal(destinations[0].tensor, stored[0].tensor)
 
     def test_mixed_lookup_existing_and_missing(self):
         """Lookup a mix of stored and non-stored keys."""

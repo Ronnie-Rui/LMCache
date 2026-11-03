@@ -29,14 +29,24 @@ void ensure_batch_result_size(const std::vector<T>& results, size_t expected,
   }
 }
 
+std::string describe_get_failure(int64_t bytes_read, size_t expected) {
+  if (bytes_read <= 0) {
+    return "returned " + std::to_string(bytes_read);
+  }
+  return "size mismatch: expected " + std::to_string(expected) +
+         " bytes, got " + std::to_string(bytes_read);
+}
+
 }  // namespace
 
 MooncakeConnector::MooncakeConnector(ConfigDict config, int num_workers,
                                      L1RegistrationConfig l1_registration,
-                                     WorkerPoolConfig worker_pool_config)
+                                     WorkerPoolConfig worker_pool_config,
+                                     bool require_exact_size)
     : ConnectorBase(num_workers, std::move(worker_pool_config)),
       config_(std::move(config)),
-      l1_registration_(l1_registration) {
+      l1_registration_(l1_registration),
+      require_exact_size_(require_exact_size) {
   // Create a RealClient via the static factory.
   client_ = mooncake::RealClient::create();
   if (!client_) {
@@ -71,14 +81,20 @@ WorkerMooncakeConn MooncakeConnector::create_connection() {
   return conn;
 }
 
+bool MooncakeConnector::valid_read_size(int64_t bytes_read, size_t len) const {
+  return bytes_read > 0 &&
+         (!require_exact_size_ || static_cast<size_t>(bytes_read) == len);
+}
+
 void MooncakeConnector::do_single_get(WorkerMooncakeConn& conn,
                                       const std::string& key, void* buf,
                                       size_t len, size_t chunk_size) {
   (void)chunk_size;
   ensure_registered(buf, len);
   int64_t bytes_read = conn.client->get_into(key, buf, len);
-  if (bytes_read <= 0) {
-    throw std::runtime_error("Mooncake get_into failed for key: " + key);
+  if (!valid_read_size(bytes_read, len)) {
+    throw std::runtime_error("Mooncake get_into failed for key " + key + ": " +
+                             describe_get_failure(bytes_read, len));
   }
 }
 
@@ -151,12 +167,12 @@ void MooncakeConnector::do_batch_get(WorkerMooncakeConn& conn,
   ensure_batch_result_size(results, req.keys.size(), "batch_get_into");
 
   for (size_t i = 0; i < results.size(); ++i) {
-    if (results[i] <= 0) {
+    if (!valid_read_size(results[i], req.buf_lens[i])) {
       req.batch->per_key_results[req.start_idx + i] = 0;
       fprintf(stderr,
-              "[LMCache GET] key %s failed: Mooncake batch_get_into "
-              "returned %lld\n",
-              req.keys[i].c_str(), static_cast<long long>(results[i]));
+              "[LMCache GET] key %s failed: Mooncake batch_get_into %s\n",
+              req.keys[i].c_str(),
+              describe_get_failure(results[i], req.buf_lens[i]).c_str());
       continue;
     }
     req.batch->per_key_results[req.start_idx + i] = 1;
